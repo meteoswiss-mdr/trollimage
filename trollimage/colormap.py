@@ -6,6 +6,7 @@
 # Author(s):
 
 #   Martin Raspaud <martin.raspaud@smhi.se>
+#   Ulrich Hamann <ulrich.hamann@meteoswiss.ch>
 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -78,7 +79,7 @@ class Colormap(object):
                (-40.0, (1, 1, 1)),
                (30.0, (0, 0, 0)))
 
-    or with a list of values and a list of color tuples like this::
+    or with a list of values and a list of color tuples like this:
     (Attention, in this case the arguments have to be lists, not tuples!!!)
 
       Colormap([-75.0,-40.0001,-40.0,30.0],[(0.0, 1.0, 1.0),(1, 1, 1),(0, 0, 0)]
@@ -149,6 +150,7 @@ rainbow = Colormap((0.000, (0.0, 0.0, 0.5)),
                    (0.875, (1.0, 0.0, 0.0)),
                    (1.000, (0.5, 0.0, 0.0)))
 
+# colormap for hsaf h03 products, see http://hsaf.meteoam.it/precipitation.php?tab=3
 hsaf = Colormap((0.000, ( 64./255.,  0./255.,  64./255.)),
                 (0.166, ( 64./255.,224./255., 255./255.)),
                 (0.200, ( 64./255.,255./255., 255./255.)),
@@ -172,8 +174,8 @@ hsaf = Colormap((0.000, ( 64./255.,  0./255.,  64./255.)),
 
 # * Single hue *
 
-blues = Colormap((0.000, (247 / 255.0, 251 / 255.0, 1.0)),
-                (1.000, (8 / 255.0, 48 / 255.0, 107 / 255.0)))
+blues = Colormap((0.000, (247 / 255.0, 251 / 255.0,    1.0     )),
+                 (1.000, (  8 / 255.0,  48 / 255.0, 107 / 255.0)))
 
 greens = Colormap((0.000, (247 / 255.0, 252 / 255.0, 245 / 255.0)),
                   (1.000, (0.0, 68 / 255.0, 27 / 255.0)))
