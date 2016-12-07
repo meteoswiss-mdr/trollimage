@@ -1,6 +1,32 @@
 Changelog
 =========
 
+v1.0.2 (2016-10-27)
+-------------------
+
+- Update changelog. [Martin Raspaud]
+
+- Bump version: 1.0.1 → 1.0.2. [Martin Raspaud]
+
+- Merge branch 'release-v1.0.1' [Martin Raspaud]
+
+- Fix Numpy requirement inconsistency. [Adam.Dybbroe]
+
+  trollimage now requires Numpy 1.6 or newer. The percentile function which
+  is used was introduced in 1.5.x and not available in 1.4
+
+
+v1.0.1 (2016-10-27)
+-------------------
+
+- Update changelog. [Martin Raspaud]
+
+- Bump version: 1.0.0 → 1.0.1. [Martin Raspaud]
+
+- Add bump and changelog config files. [Martin Raspaud]
+
+- Round data instead of truncation when saving to ints. [Martin Raspaud]
+
 v1.0.0 (2015-12-14)
 -------------------
 
