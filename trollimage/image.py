@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# Copyright (c) 2009-2015
+# Copyright (c) 2009-2017
 
 # Author(s):
 
@@ -30,12 +30,11 @@ arrays containing invalid values may be properly handled.
 import logging
 import os
 import re
-import six
-
-from PIL import Image as Pil
-import numpy as np
 from copy import deepcopy
 
+import numpy as np
+import six
+from PIL import Image as Pil
 
 try:
     import numexpr as ne
@@ -131,7 +130,10 @@ class Image(object):
 
         if(isinstance(channels, (tuple, list)) and
            len(channels) != len(re.findall("[A-Z]", mode))):
-            raise ValueError("Number of channels (%s) does not match mode %s." % (len(channels), mode))
+            errmsg = ("Number of channels (" +
+                      "{n}) does not match mode {mode}.".format(
+                          n=len(channels), mode=mode))
+            raise ValueError(errmsg)
 
         if copy and channels is not None:
             channels = deepcopy(channels)
@@ -386,6 +388,11 @@ class Image(object):
             # Take care of GeoImage.tags (if any).
             params['pnginfo'] = self._pngmeta()
 
+        # JPEG images does not support transparency
+        if fformat == 'jpeg' and not self.fill_value:
+            self.fill_value = [0, 0, 0, 0]
+            logger.debug("No fill_value provided, setting it to 0.")
+
         img = self.pil_image()
         img.save(filename, fformat, **params)
 
@@ -482,7 +489,9 @@ class Image(object):
             self._secondary_mode = self.mode
 
         palette = []
-        selfmask = reduce(np.ma.mask_or, [chn.mask for chn in chans])
+        selfmask = chans[0].mask
+        for chn in chans[1:]:
+            selfmask = np.ma.mask_or(selfmask, chn.mask)
         new_chn = np.ma.zeros(self.shape, dtype=int)
         color_nb = 0
 
@@ -490,9 +499,9 @@ class Image(object):
             for j in range(self.width):
                 current_col = tuple([chn[i, j] for chn in chans])
                 try:
-                    (idx
-                     for idx in range(len(palette))
-                     if palette[idx] == current_col).next()
+                    next(idx
+                         for idx in range(len(palette))
+                         if palette[idx] == current_col)
                 except StopIteration:
                     idx = color_nb
                     palette.append(current_col)
@@ -508,9 +517,9 @@ class Image(object):
                 current_col = tuple(self.fill_value)
                 fill_alpha = []
             try:
-                (idx
-                 for idx in range(len(palette))
-                 if palette[idx] == current_col).next()
+                next(idx
+                     for idx in range(len(palette))
+                     if palette[idx] == current_col)
             except StopIteration:
                 idx = color_nb
                 palette.append(current_col)
@@ -753,7 +762,7 @@ class Image(object):
                 chn = chn.repeat([factor[0]] * chn.shape[0], axis=0)
             else:
                 chn = chn[[idx * factor[0]
-                           for idx in range(self.height / factor[0])],
+                           for idx in range(int(self.height / factor[0]))],
                           :]
             if zoom[1]:
                 self.channels[i] = chn.repeat([factor[1]] * chn.shape[1],
@@ -761,8 +770,8 @@ class Image(object):
             else:
                 self.channels[i] = chn[:,
                                        [idx * factor[1]
-                                        for idx in range(self.width /
-                                                         factor[1])]]
+                                        for idx in range(int(self.width /
+                                                             factor[1]))]]
 
             i = i + 1
 
@@ -798,7 +807,8 @@ class Image(object):
             self.channels[0] = luminance
             self.convert(mode)
 
-    def enhance(self, inverse=False, gamma=1.0, stretch="no", stretch_parameters=None, **kwargs):
+    def enhance(self, inverse=False, gamma=1.0, stretch="no",
+                stretch_parameters=None, **kwargs):
         """Image enhancement function. It applies **in this order** inversion,
         gamma correction, and stretching to the current image, with parameters
         *inverse* (see :meth:`Image.invert`), *gamma* (see
@@ -807,6 +817,8 @@ class Image(object):
         self.invert(inverse)
         if stretch_parameters is None:
             stretch_parameters = {}
+
+        stretch_parameters.update(kwargs)
         self.stretch(stretch, **stretch_parameters)
         self.gamma(gamma)
 
@@ -865,7 +877,8 @@ class Image(object):
         range [0.0,1.0].
         """
 
-        logger.debug("Applying stretch %s with parameters %s", stretch, str(kwargs))
+        logger.debug("Applying stretch %s with parameters %s",
+                     stretch, str(kwargs))
 
         ch_len = len(self.channels)
         if self.mode.endswith("A"):
@@ -986,7 +999,8 @@ class Image(object):
         logger.debug("Left and right percentiles: " +
                      str(cutoffs[0] * 100) + " " + str(cutoffs[1] * 100))
 
-        left, right = np.percentile(carr, [cutoffs[0] * 100, 100. - cutoffs[1] * 100])
+        left, right = np.percentile(
+            carr, [cutoffs[0] * 100, 100. - cutoffs[1] * 100])
 
         delta_x = (right - left)
         logger.debug("Interval: left=%f, right=%f width=%f",
@@ -996,7 +1010,6 @@ class Image(object):
             self.channels[ch_nb] = np.ma.array((arr - left) / delta_x,
                                                mask=arr.mask)
         else:
-            self.channels[ch_nb] = np.ma.zeros(arr.shape)
             logger.warning("Unable to make a contrast stretch!")
 
     def crude_stretch(self, ch_nb, min_stretch=None, max_stretch=None):
@@ -1034,7 +1047,9 @@ class Image(object):
         if self.mode != img.mode:
             raise ValueError("Cannot merge image of different modes.")
 
-        selfmask = reduce(np.ma.mask_or, [chn.mask for chn in self.channels])
+        selfmask = self.channels[0].mask
+        for chn in self.channels[1:]:
+            selfmask = np.ma.mask_or(selfmask, chn.mask)
 
         for i in range(len(self.channels)):
             self.channels[i] = np.ma.where(selfmask,
