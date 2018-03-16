@@ -62,11 +62,13 @@ logger = logging.getLogger(__name__)
 class RIOFile(object):
     """Rasterio wrapper to allow da.store to do window saving."""
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, path, mode='w', **kwargs):
         """Initialize the object."""
-        self.args = args
+        self.path = path
+        self.mode = mode
         self.kwargs = kwargs
         self.rfile = None
+        self._closed = True
 
     def __setitem__(self, key, item):
         """Put the data chunk in the image."""
@@ -91,14 +93,31 @@ class RIOFile(object):
         self.rfile.write(item, window=Window(chx_off, chy_off, chx, chy),
                          indexes=indexes)
 
+    def open(self, mode=None):
+        mode = mode or self.mode
+        if self._closed:
+            self.rfile = rasterio.open(self.path, mode, **self.kwargs)
+            self._closed = False
+
+    def close(self):
+        if not self._closed:
+            self.rfile.close()
+            self._closed = True
+
     def __enter__(self):
         """Enter method."""
-        self.rfile = rasterio.open(*self.args, **self.kwargs)
+        self.open()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Exit method."""
-        self.rfile.close()
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except (IOError, OSError):
+            pass
 
     @property
     def colorinterp(self):
@@ -146,23 +165,7 @@ class XRImage(object):
 
     def __init__(self, data):
         """Initialize the image."""
-        try:
-            dims = data.dims
-        except AttributeError:
-            raise TypeError("Data must have a 'dims' attribute.")
-
-        if 'y' not in dims or 'x' not in dims:
-            raise ValueError("Data must have a 'y' and 'x' dimension")
-
-        # doesn't actually copy the data underneath
-        # we don't want our operations to change the user's data
-        data = data.copy()
-        if "bands" not in dims:
-            if data.ndim <= 2:
-                data = data.expand_dims('bands')
-                data['bands'] = ['L']
-            else:
-                raise ValueError("No 'bands' dimension provided.")
+        data = self._correct_dims(data)
 
         # 'data' is an XArray, get the data from it as a dask array
         if not isinstance(data.data, da.Array):
@@ -174,28 +177,89 @@ class XRImage(object):
         self.height, self.width = self.data.sizes['y'], self.data.sizes['x']
         self.palette = None
 
+    @staticmethod
+    def _correct_dims(data):
+        """Standardize dimensions to bands, y, and x."""
+        if not hasattr(data, 'dims'):
+            raise TypeError("Data must have a 'dims' attribute.")
+
+        # doesn't actually copy the data underneath
+        # we don't want our operations to change the user's data
+        data = data.copy()
+
+        if 'y' not in data.dims or 'x' not in data.dims:
+            if data.ndim != 2:
+                raise ValueError("Data must have a 'y' and 'x' dimension")
+
+            # rename dimensions so we can use them
+            # don't rename 'x' or 'y' if they already exist
+            if 'y' not in data.dims:
+                # find a dimension that isn't 'x'
+                old_dim = [d for d in data.dims if d != 'x'][0]
+                data = data.rename({old_dim: 'y'})
+            if 'x' not in data.dims:
+                # find a dimension that isn't 'y'
+                old_dim = [d for d in data.dims if d != 'y'][0]
+                data = data.rename({old_dim: 'x'})
+
+        if "bands" not in data.dims:
+            if data.ndim <= 2:
+                data = data.expand_dims('bands')
+                data['bands'] = ['L']
+            else:
+                raise ValueError("No 'bands' dimension provided.")
+
+        return data
+
     @property
     def mode(self):
         """Mode of the image."""
         return ''.join(self.data['bands'].values)
 
-    def save(self, filename, fformat=None, fill_value=None, format_kw=None):
+    def save(self, filename, fformat=None, fill_value=None, compute=True,
+             **format_kwargs):
         """Save the image to the given *filename*.
 
-        For some formats like jpg and png, the work is delegated to
-        :meth:`pil_save`, which doesn't support the *compression* option.
+        Args:
+            filename (str): Output filename
+            fformat (str): File format of output file (optional). Can be
+                           one of many image formats supported by the
+                           `rasterio` or `PIL` libraries ('jpg', 'png',
+                           'tif'). By default this is deteremined by the
+                           extension of the provided filename.
+            fill_value (float): Replace invalid data values with this value
+                                and do not produce an Alpha band. Default
+                                behavior is to create an alpha band.
+            compute (bool): If True (default) write the data to the file
+                            immediately. If False the return value is either
+                            a `dask.Delayed` object or a tuple of
+                            ``(source, target)`` to be passed to
+                            `dask.array.store`.
+            **format_kwargs: Additional format options to pass to `rasterio`
+                             or `PIL` saving methods.
+
+        Returns:
+            Either `None` if `compute` is True or a `dask.Delayed` object or
+            ``(source, target)`` pair to be passed to `dask.array.store`.
+            If compute is False the return value depends on format and how
+            the image backend is used. If ``(source, target)`` is provided
+            then target is an open file-like object that must be closed by
+            the caller.
+
         """
         fformat = fformat or os.path.splitext(filename)[1][1:4]
         if fformat == 'tif' and rasterio:
-            self.rio_save(filename, fformat, fill_value, format_kw)
+            return self.rio_save(filename, fformat=fformat,
+                                 fill_value=fill_value, compute=compute,
+                                 **format_kwargs)
         else:
-            self.pil_save(filename, fformat, fill_value, format_kw)
+            return self.pil_save(filename, fformat, fill_value,
+                                 compute=compute, **format_kwargs)
 
     def rio_save(self, filename, fformat=None, fill_value=None,
-                 dtype=np.uint8, format_kw=None):
+                 dtype=np.uint8, compute=True, **format_kwargs):
         """Save the image using rasterio."""
         fformat = fformat or os.path.splitext(filename)[1][1:4]
-        format_kw = format_kw or {}
         drivers = {'jpg': 'JPEG',
                    'png': 'PNG',
                    'tif': 'GTiff'}
@@ -210,7 +274,7 @@ class XRImage(object):
         transform = None
         if driver == 'GTiff':
             if not np.issubdtype(data.dtype, np.floating):
-                format_kw.setdefault('compress', 'DEFLATE')
+                format_kwargs.setdefault('compress', 'DEFLATE')
             photometric_map = {
                 'RGB': 'RGB',
                 'RGBA': 'RGB',
@@ -220,8 +284,8 @@ class XRImage(object):
                 'YCBCRA': 'YCBCR',
             }
             if mode.upper() in photometric_map:
-                format_kw.setdefault('photometric',
-                                     photometric_map[mode.upper()])
+                format_kwargs.setdefault('photometric',
+                                         photometric_map[mode.upper()])
 
             try:
                 crs = rasterio.crs.CRS(data.attrs['area'].proj_dict)
@@ -231,7 +295,9 @@ class XRImage(object):
                                                            east, north,
                                                            width, height)
                 if "start_time" in data.attrs:
-                    new_tags = {'TIFFTAG_DATETIME': data.attrs["start_time"].strftime("%Y:%m:%d %H:%M:%S")}
+                    stime = data.attrs['start_time']
+                    stime_str = stime.strftime("%Y:%m:%d %H:%M:%S")
+                    new_tags = {'TIFFTAG_DATETIME': stime_str}
 
             except (KeyError, AttributeError):
                 logger.info("Couldn't create geotransform")
@@ -239,20 +305,28 @@ class XRImage(object):
             raise ValueError('JPEG does not support alpha')
 
         # FIXME add png metadata
+        r_file = RIOFile(filename, 'w', driver=driver,
+                         width=data.sizes['x'], height=data.sizes['y'],
+                         count=data.sizes['bands'],
+                         dtype=dtype,
+                         nodata=fill_value,
+                         crs=crs, transform=transform, **format_kwargs)
+        r_file.open()
+        r_file.colorinterp = color_interp(data)
+        r_file.rfile.update_tags(**new_tags)
 
-        with RIOFile(filename, 'w', driver=driver,
-                     width=data.sizes['x'], height=data.sizes['y'],
-                     count=data.sizes['bands'],
-                     dtype=dtype,
-                     nodata=fill_value,
-                     crs=crs, transform=transform, **format_kw) as r_file:
-
-            r_file.colorinterp = color_interp(data)
-            r_file.rfile.update_tags(**new_tags)
-            da.store(data.data, r_file, lock=True)
+        if compute:
+            # write data to the file now
+            res = da.store(data.data, r_file)
+            r_file.close()
+            return res
+        # provide the data object and the opened file so the caller can
+        # store them when they would like. Caller is responsible for
+        # closing the file
+        return data.data, r_file
 
     def pil_save(self, filename, fformat=None, fill_value=None,
-                 format_kw=None):
+                 compute=True, **format_kwargs):
         """Save the image to the given *filename* using PIL.
 
         For now, the compression level [0-9] is ignored, due to PIL's lack of
@@ -261,17 +335,18 @@ class XRImage(object):
         fformat = fformat or os.path.splitext(filename)[1][1:4]
         fformat = check_image_format(fformat)
 
-        if format_kw is None:
-            params = {}
-        else:
-            params = format_kw.copy()
-
         if fformat == 'png':
             # Take care of GeoImage.tags (if any).
-            params['pnginfo'] = self._pngmeta()
+            format_kwargs['pnginfo'] = self._pngmeta()
 
-        img = self.pil_image(fill_value)
-        img.save(filename, fformat, **params)
+        def _create_save_image(fill_value, filename, fformat, format_kwargs):
+            img = self.pil_image(fill_value)
+            img.save(filename, fformat, **format_kwargs)
+        delay = dask.delayed(_create_save_image)(
+            fill_value, filename, fformat, format_kwargs)
+        if compute:
+            return delay.compute()
+        return delay
 
     def _pngmeta(self):
         """Return GeoImage.tags as a PNG metadata object.
@@ -424,13 +499,33 @@ class XRImage(object):
         logger.debug("Calculate the histogram quantiles: ")
         logger.debug("Left and right quantiles: " +
                      str(cutoffs[0]) + " " + str(cutoffs[1]))
+
         # Quantile requires the data to be loaded, not supported on dask arrays
-        chunks = self.data.data.chunks
-        self.data.load()
-        left, right = self.data.quantile([cutoffs[0], 1. - cutoffs[1]],
-                                          dim=['x', 'y'])
-        self.data.data = da.from_array(self.data.data, chunks=chunks)
-        logger.debug("Interval: left=%s, right=%s", str(left), str(right))
+        def _compute_quantile(data, cutoffs):
+            # delayed will provide us the fully computed xarray with ndarray
+            left, right = data.quantile([cutoffs[0], 1. - cutoffs[1]],
+                                        dim=['x', 'y'])
+            logger.debug("Interval: left=%s, right=%s", str(left), str(right))
+            return left.data, right.data
+
+        cutoff_type = np.float64
+        # numpy percentile (which quantile calls) returns 64-bit floats
+        # unless the value is a higher order float
+        if np.issubdtype(self.data.dtype, np.floating) and \
+                np.dtype(self.data.dtype).itemsize > 8:
+            cutoff_type = self.data.dtype
+        left, right = dask.delayed(_compute_quantile, nout=2)(self.data, cutoffs)
+        left_data = da.from_delayed(left,
+                                    shape=(self.data.sizes['bands'],),
+                                    dtype=cutoff_type)
+        left = xr.DataArray(left_data, dims=('bands',),
+                            coords={'bands': self.data['bands']})
+        right_data = da.from_delayed(right,
+                                     shape=(self.data.sizes['bands'],),
+                                     dtype=cutoff_type)
+        right = xr.DataArray(right_data, dims=('bands',),
+                             coords={'bands': self.data['bands']})
+
         self.crude_stretch(left, right)
 
     def crude_stretch(self, min_stretch=None, max_stretch=None):

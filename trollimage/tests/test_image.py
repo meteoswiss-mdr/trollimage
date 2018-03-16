@@ -754,6 +754,21 @@ class TestXRImage(unittest.TestCase):
         img = xrimage.XRImage(data)
         self.assertEqual(img.mode, 'L')
 
+        data = xr.DataArray([[0, 0.5, 0.5], [0.5, 0.25, 0.25]])
+        img = xrimage.XRImage(data)
+        self.assertEqual(img.mode, 'L')
+        self.assertTupleEqual(img.data.dims, ('bands', 'y', 'x'))
+
+        data = xr.DataArray([[0, 0.5, 0.5], [0.5, 0.25, 0.25]], dims=['x', 'y_2'])
+        img = xrimage.XRImage(data)
+        self.assertEqual(img.mode, 'L')
+        self.assertTupleEqual(img.data.dims, ('bands', 'x', 'y'))
+
+        data = xr.DataArray([[0, 0.5, 0.5], [0.5, 0.25, 0.25]], dims=['x_2', 'y'])
+        img = xrimage.XRImage(data)
+        self.assertEqual(img.mode, 'L')
+        self.assertTupleEqual(img.data.dims, ('bands', 'x', 'y'))
+
         data = xr.DataArray(np.arange(75).reshape(5, 5, 3), dims=[
                             'y', 'x', 'bands'], coords={'bands': ['R', 'G', 'B']})
         img = xrimage.XRImage(data)
@@ -767,6 +782,7 @@ class TestXRImage(unittest.TestCase):
     def test_save(self):
         import xarray as xr
         import dask.array as da
+        from dask.delayed import Delayed
         from trollimage import xrimage
 
         data = xr.DataArray(np.arange(75).reshape(5, 5, 3) / 75., dims=[
@@ -786,6 +802,44 @@ class TestXRImage(unittest.TestCase):
         img = xrimage.XRImage(data)
         with NamedTemporaryFile(suffix='.png') as tmp:
             img.save(tmp.name)
+
+        # dask delayed save
+        with NamedTemporaryFile(suffix='.png') as tmp:
+            delay = img.save(tmp.name, compute=False)
+            self.assertIsInstance(delay, Delayed)
+            delay.compute()
+
+    def test_save_geotiff(self):
+        import xarray as xr
+        import dask.array as da
+        from trollimage import xrimage
+
+        data = xr.DataArray(np.arange(75).reshape(5, 5, 3) / 75., dims=[
+            'y', 'x', 'bands'], coords={'bands': ['R', 'G', 'B']})
+        img = xrimage.XRImage(data)
+        with NamedTemporaryFile(suffix='.tif') as tmp:
+            img.save(tmp.name)
+
+        data = xr.DataArray(da.from_array(np.arange(75).reshape(5, 5, 3) / 75.,
+                                          chunks=5),
+                            dims=['y', 'x', 'bands'],
+                            coords={'bands': ['R', 'G', 'B']})
+        img = xrimage.XRImage(data)
+        with NamedTemporaryFile(suffix='.tif') as tmp:
+            img.save(tmp.name)
+        data = data.where(data > (10 / 75.0))
+        img = xrimage.XRImage(data)
+        with NamedTemporaryFile(suffix='.tif') as tmp:
+            img.save(tmp.name)
+
+        # dask delayed save
+        with NamedTemporaryFile(suffix='.tif') as tmp:
+            delay = img.save(tmp.name, compute=False)
+            self.assertIsInstance(delay, tuple)
+            self.assertIsInstance(delay[0], da.Array)
+            self.assertIsInstance(delay[1], xrimage.RIOFile)
+            da.store(*delay)
+            delay[1].close()
 
     def test_gamma(self):
         """Test gamma correction."""
