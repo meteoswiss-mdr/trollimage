@@ -2,6 +2,104 @@ Changelog
 =========
 
 
+v1.5.7 (2018-08-28)
+-------------------
+- Update changelog. [David Hoese]
+- Bump version: 1.5.6 → 1.5.7. [David Hoese]
+- Change default value of `tags` kwarg to `None` (#26) [Panu Lahtinen]
+- Update to version v1.5.7a0.dev0. [David Hoese]
+
+
+v1.5.6 (2018-08-24)
+-------------------
+- Update changelog. [David Hoese]
+- Bump version: 1.5.5 → 1.5.6. [David Hoese]
+- Revert broken change to Colormap. [David Hoese]
+- Update version to v1.5.6a0.dev0. [David Hoese]
+
+
+v1.5.5 (2018-08-24)
+-------------------
+- Update changelog. [David Hoese]
+- Bump version: 1.5.4 → 1.5.5. [David Hoese]
+- Make small code cleanup in Colormap. [David Hoese]
+- Merge pull request #25 from yufeizhu600/master. [David Hoese]
+
+  Add support for custom rasterio 'tags' when saving geotiffs
+- Fix typo in xrimage. [David Hoese]
+
+  This is what I get for using the github editor
+- Change TIFFTAG_DATETIME to only overwrite if not specified. [David
+  Hoese]
+- Add support of customized tags to rasterio image saving. [Yufei Zhu]
+- Merge pull request #24 from pytroll/bugfix-L-mode. [David Hoese]
+
+  Fix writing 'L' mode images with extra dimensions
+- Add tests for saving single band images. [Panu Lahtinen]
+- Remove extra dimension from the image array. [Panu Lahtinen]
+- Update version to 1.5.5a0.dev0. [David Hoese]
+
+
+v1.5.4 (2018-07-24)
+-------------------
+- Update changelog. [David Hoese]
+- Bump version: 1.5.3 → 1.5.4. [David Hoese]
+- Merge pull request #20 from pytroll/feature-finalize-public. [David
+  Hoese]
+
+  Feature finalize public
+- Remove unused imports in show test. [davidh-ssec]
+- Add test for XRImage.show. [davidh-ssec]
+- Fix styling issues. [davidh-ssec]
+- Fixing style errors. [stickler-ci]
+- Fix sphinx documentation including adding xrimage docs. [davidh-ssec]
+- Deprecate _finalize in favor of finalize. [davidh-ssec]
+- Add `_repr_png_` to XRImage. [davidh-ssec]
+
+
+v1.5.3 (2018-05-17)
+-------------------
+- Update changelog. [davidh-ssec]
+- Bump version: 1.5.2 → 1.5.3. [davidh-ssec]
+- Fix colorize to work with xarray 0.10.4. [davidh-ssec]
+- Add LICENSE.txt to source dist manifest. [davidh-ssec]
+- Fix develop branch usage in PR template. [davidh-ssec]
+- Update setup.py to include xarray and dask optional dependencies.
+  [davidh-ssec]
+- Fix badge formatting. [davidh-ssec]
+- Reorganize readme. [davidh-ssec]
+- Remove unsupported downloads badge. [davidh-ssec]
+- Update PR template to not mention develop branch. [davidh-ssec]
+
+
+v1.5.2 (2018-05-16)
+-------------------
+- Update changelog. [davidh-ssec]
+- Bump version: 1.5.1 → 1.5.2. [davidh-ssec]
+- Update badges to include appveyor. [davidh-ssec]
+- Skip bad file permission tests on Windows. [davidh-ssec]
+- Fix Windows permissions, try again. [davidh-ssec]
+- Update image saving tests to use permissions that Windows might like.
+  [davidh-ssec]
+- Fix travis actually loading ci-helpers. [davidh-ssec]
+- Update travis to use ci-helpers and add appveyor. [davidh-ssec]
+- Merge pull request #16 from pytroll/bugfix-colorize-alpha. [David
+  Hoese]
+
+  Fix bug in alpha band handling of xrimage colorize
+- Fix python 2 incompatible tuple expansion. [davidh-ssec]
+- Fixing style errors. [stickler-ci]
+- Fix bug in alpha band handling of xrimage colorize. [davidh-ssec]
+
+
+v1.5.1 (2018-03-19)
+-------------------
+- Update changelog. [Martin Raspaud]
+- Bump version: 1.5.0 → 1.5.1. [Martin Raspaud]
+- Adding .stickler.yml (#15) [Stickler Bot]
+- Fix problems with palettize (#14) [Martin Raspaud]
+
+
 v1.5.0 (2018-03-12)
 -------------------
 - Update changelog. [davidh-ssec]
