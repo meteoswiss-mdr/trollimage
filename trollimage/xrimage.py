@@ -164,17 +164,16 @@ def color_interp(data):
 
 
 class XRImage(object):
-    """Image class using xarray as internal storage."""
+    """Image class using an :class:`xarray.DataArray` as internal storage."""
 
     def __init__(self, data):
-        """Initialize the image."""
+        """Initialize the image with a :class:`~xarray.DataArray`."""
         data = self._correct_dims(data)
 
         # 'data' is an XArray, get the data from it as a dask array
         if not isinstance(data.data, da.Array):
             logger.debug("Convert image data to dask array")
-            data.data = da.from_array(data.data, chunks=(data.sizes['bands'],
-                                                         4096, 4096))
+            data.data = da.from_array(data.data, chunks=(data.sizes['bands'], 4096, 4096))
 
         self.data = data
         self.height, self.width = self.data.sizes['y'], self.data.sizes['x']
@@ -378,20 +377,159 @@ class XRImage(object):
 
         return meta
 
-    def fill_or_alpha(self, data, fill_value=None):
-        """Fill the data with fill_value, or create an alpha channels."""
-        if fill_value is None and not self.mode.endswith("A"):
-            not_alpha = [b for b in data.coords['bands'].values if b != 'A']
-            # if any of the bands are valid, we don't want transparency
-            null_mask = data.sel(bands=not_alpha).notnull().any(dim='bands')
-            null_mask = null_mask.expand_dims('bands')
-            null_mask['bands'] = ['A']
+    def _create_alpha(self, data, fill_value=None):
+        """Create an alpha band DataArray object.
 
-            data = xr.concat([data, null_mask.astype(data.dtype)],
-                             dim="bands")
-        elif fill_value is not None:
-            data = data.fillna(fill_value)
+        If `fill_value` is provided and input data is an integer type
+        then it is used to determine invalid "null" pixels instead of
+        xarray's `isnull` and `notnull` methods.
+
+        The returned array is 1 where data is valid, 0 where invalid.
+
+        """
+        not_alpha = [b for b in data.coords['bands'].values if b != 'A']
+        null_mask = data.sel(bands=not_alpha)
+        if np.issubdtype(data.dtype, np.integer) and fill_value is not None:
+            null_mask = null_mask != fill_value
+        else:
+            null_mask = null_mask.notnull()
+        # if any of the bands are valid, we don't want transparency
+        null_mask = null_mask.any(dim='bands')
+        null_mask = null_mask.expand_dims('bands')
+        null_mask['bands'] = ['A']
+        # match data dtype
+        return null_mask
+
+    def _add_alpha(self, data, alpha=None):
+        """Create an alpha channel and concatenate it to the provided data.
+
+        If ``data`` is an integer type then the alpha band will be scaled
+        to use the smallest (min) value as fully transparent and the largest
+        (max) value as fully opaque. For float types the alpha band spans
+        0 to 1.
+
+        """
+        null_mask = alpha if alpha is not None else self._create_alpha(data)
+        # if we are using integer data, then alpha needs to be min-int to max-int
+        # otherwise for floats we want 0 to 1
+        if np.issubdtype(data.dtype, np.integer):
+            # xarray sometimes upcasts this calculation, so cast again
+            null_mask = self._scale_to_dtype(null_mask, data.dtype).astype(data.dtype)
+        data = xr.concat([data, null_mask], dim="bands")
         return data
+
+    def _scale_to_dtype(self, data, dtype):
+        """Scale provided data to dtype range assuming a 0-1 range.
+
+        Float input data is assumed to be normalized to a 0 to 1 range.
+        Integer input data is not scaled, only clipped. A float output
+        type is not scaled since both outputs and inputs are assumed to
+        be in the 0-1 range already.
+
+        """
+        if np.issubdtype(dtype, np.integer):
+            if np.issubdtype(data, np.integer):
+                # preserve integer data type
+                data = data.clip(np.iinfo(dtype).min, np.iinfo(dtype).max)
+            else:
+                # scale float data (assumed to be 0 to 1) to full integer space
+                dinfo = np.iinfo(dtype)
+                data = data.clip(0, 1) * (dinfo.max - dinfo.min) + dinfo.min
+            data = data.round()
+        return data
+
+    def _check_modes(self, modes):
+        """Check that the image is in one of the given *modes*, raise an exception otherwise."""
+        if not isinstance(modes, (tuple, list, set)):
+            modes = [modes]
+        if self.mode not in modes:
+            raise ValueError("Image not in suitable mode, expected: %s, got: %s" % (modes, self.mode))
+
+    def _from_p(self, mode):
+        """Convert the image from P or PA to RGB or RGBA."""
+        self._check_modes(("P", "PA"))
+
+        if self.mode.endswith("A"):
+            alpha = self.data.sel(bands=["A"]).data
+            mode = mode + "A" if not mode.endswith("A") else mode
+        else:
+            alpha = None
+
+        if not self.palette:
+            raise RuntimeError("Can't convert palettized image, missing palette.")
+
+        pal = np.array(self.palette)
+        pal = da.from_array(pal, chunks=pal.shape)
+        flat_indexes = self.data.data[0].ravel().astype('int64')
+        new_shape = (3,) + self.data.shape[1:3]
+        new_data = pal[flat_indexes].reshape(new_shape)
+        coords = dict(self.data.coords)
+        coords["bands"] = list(mode)
+
+        if alpha is not None:
+            new_arr = da.concatenate((new_data, alpha), axis=0)
+            data = xr.DataArray(new_arr, coords=coords, attrs=self.data.attrs, dims=self.data.dims)
+        else:
+            data = xr.DataArray(new_data, coords=coords, attrs=self.data.attrs, dims=self.data.dims)
+
+        return data
+
+    def _l2rgb(self, mode):
+        """Convert from L (black and white) to RGB.
+        """
+        self._check_modes(("L", "LA"))
+
+        bands = ["L"] * 3
+        if mode[-1] == "A":
+            bands.append("A")
+        data = self.data.sel(bands=bands)
+        data["bands"] = list(mode)
+        return data
+
+    def convert(self, mode):
+        if mode == self.mode:
+            return self.__class__(self.data)
+
+        if mode not in ["P", "PA", "L", "LA", "RGB", "RGBA"]:
+            raise ValueError("Mode %s not recognized." % (mode))
+
+        if mode == self.mode + "A":
+            data = self._add_alpha(self.data).data
+            coords = dict(self.data.coords)
+            coords["bands"] = list(mode)
+            data = xr.DataArray(data, coords=coords, attrs=self.data.attrs, dims=self.data.dims)
+            new_img = XRImage(data)
+        elif mode + "A" == self.mode:
+            # Remove the alpha band from our current image
+            no_alpha = self.data.sel(bands=[b for b in self.data.coords["bands"].data if b != "A"]).data
+            coords = dict(self.data.coords)
+            coords["bands"] = list(mode)
+            data = xr.DataArray(no_alpha, coords=coords, attrs=self.data.attrs, dims=self.data.dims)
+            new_img = XRImage(data)
+        elif mode.endswith("A") and not self.mode.endswith("A"):
+            img = self.convert(self.mode + "A")
+            new_img = img.convert(mode)
+        elif self.mode.endswith("A") and not mode.endswith("A"):
+            img = self.convert(self.mode[:-1])
+            new_img = img.convert(mode)
+        else:
+            cases = {
+                "P": {"RGB": self._from_p},
+                "PA": {"RGBA": self._from_p},
+                "L": {"RGB": self._l2rgb},
+                "LA": {"RGBA": self._l2rgb}
+            }
+            try:
+                data = cases[self.mode][mode](mode)
+                new_img = XRImage(data)
+            except KeyError:
+                raise ValueError("Conversion from %s to %s not implemented !"
+                                 % (self.mode, mode))
+
+        if self.mode.startswith('P') and new_img.mode.startswith('P'):
+            # need to copy the palette
+            new_img.palette = self.palette
+        return new_img
 
     def _finalize(self, fill_value=None, dtype=np.uint8):
         """Wrapper around 'finalize' method for backwards compatibility."""
@@ -401,32 +539,51 @@ class XRImage(object):
         return self.finalize(fill_value, dtype)
 
     def finalize(self, fill_value=None, dtype=np.uint8):
-        """Finalize the image.
+        """Finalize the image to be written to an output file.
 
-        This sets the channels in unsigned 8bit format ([0,255] range)
-        (if the *dtype* doesn't say otherwise).
+        This adds an alpha band or fills data with a fill_value (if specified).
+        It also scales float data to the output range of the data type (0-255
+        for uint8, default). For integer input data this method assumes the
+        data is already scaled to the proper desired range. It will still fill
+        in invalid values and add an alpha band if needed. Integer input
+        data's fill value is determined by a special ``_FillValue`` attribute
+        in the ``DataArray`` ``.attrs`` dictionary.
+
         """
-        # if self.mode == "P":
-        #     self.convert("RGB")
-        # if self.mode == "PA":
-        #     self.convert("RGBA")
-        #
+        if self.mode == "P":
+            return self.convert("RGB").finalize(fill_value=fill_value, dtype=dtype)
+        if self.mode == "PA":
+            return self.convert("RGBA").finalize(fill_value=fill_value, dtype=dtype)
 
         if np.issubdtype(dtype, np.floating) and fill_value is None:
             logger.warning("Image with floats cannot be transparent, so "
                            "setting fill_value to 0")
             fill_value = 0
 
-        final_data = self.fill_or_alpha(self.data, fill_value)
-
-        if np.issubdtype(dtype, np.integer):
-            final_data = final_data.clip(0, 1) * np.iinfo(dtype).max
-            final_data = final_data.round().astype(dtype)
+        final_data = self.data
+        # if the data are integers then this fill value will be used to check for invalid values
+        ifill = final_data.attrs.get('_FillValue') if np.issubdtype(final_data, np.integer) else None
+        if fill_value is None and not self.mode.endswith('A'):
+            # We don't have a fill value or an alpha, let's add an alpha
+            alpha = self._create_alpha(final_data, fill_value=ifill)
+            final_data = self._scale_to_dtype(final_data, dtype).astype(dtype)
+            final_data = self._add_alpha(final_data, alpha=alpha)
         else:
-            final_data = final_data.astype(dtype)
+            # scale float data to the proper dtype
+            # this method doesn't cast yet so that we can keep track of NULL values
+            final_data = self._scale_to_dtype(final_data, dtype)
+            # Add fill_value after all other calculations have been done to
+            # make sure it is not scaled for the data type
+            if ifill is not None and fill_value is not None:
+                # cast fill value to output type so we don't change data type
+                fill_value = dtype(fill_value)
+                # integer fields have special fill values
+                final_data = final_data.where(final_data != ifill, dtype(fill_value))
+            elif fill_value is not None:
+                final_data = final_data.fillna(dtype(fill_value))
 
+        final_data = final_data.astype(dtype)
         final_data.attrs = self.data.attrs
-
         return final_data, ''.join(final_data['bands'].values)
 
     def pil_image(self, fill_value=None):
@@ -546,9 +703,11 @@ class XRImage(object):
         the [0,1] range.
         """
         if min_stretch is None:
-            min_stretch = self.data.min()
+            non_band_dims = tuple(x for x in self.data.dims if x != 'bands')
+            min_stretch = self.data.min(dim=non_band_dims)
         if max_stretch is None:
-            max_stretch = self.data.max()
+            non_band_dims = tuple(x for x in self.data.dims if x != 'bands')
+            max_stretch = self.data.max(dim=non_band_dims)
 
         if isinstance(min_stretch, (list, tuple)):
             min_stretch = self.xrify_tuples(min_stretch)
@@ -696,8 +855,12 @@ class XRImage(object):
                                                    img.channels[i].mask)
 
     def colorize(self, colormap):
-        """Colorize the current image using
-        *colormap*. Works only on"L" or "LA" images.
+        """Colorize the current image using `colormap`.
+
+        .. note::
+
+            Works only on "L" or "LA" images.
+
         """
 
         if self.mode not in ("L", "LA"):
@@ -710,16 +873,14 @@ class XRImage(object):
 
         l_data = self.data.sel(bands=['L'])
 
-        # TODO: dask-ify colorize
-        def _colorize(colormap, l_data):
-            channels = colormap.colorize(l_data.data)
+        def _colorize(l_data, colormap):
+            # 'l_data' is (1, rows, cols)
+            # 'channels' will be a list of 3 (RGB) or 4 (RGBA) arrays
+            channels = colormap.colorize(l_data)
             return np.concatenate(channels, axis=0)
 
-        # TODO: xarray-ify colorize
-        # delayed = dask.delayed(colormap.colorize)(l_data.data)
-        delayed = dask.delayed(_colorize)(colormap, l_data)
-        shape = (3, l_data.sizes['y'], l_data.sizes['x'])
-        new_data = da.from_delayed(delayed, shape=shape, dtype=np.float64)
+        new_data = l_data.data.map_blocks(_colorize, colormap,
+                                          chunks=(3,) + l_data.data.chunks[1:], dtype=np.float64)
 
         if alpha is not None:
             new_data = da.concatenate([new_data, alpha.data], axis=0)
@@ -732,12 +893,15 @@ class XRImage(object):
         coords['bands'] = list(mode)
         attrs = self.data.attrs
         dims = self.data.dims
-        self.data = xr.DataArray(new_data, coords=coords, attrs=attrs,
-                                 dims=dims)
+        self.data = xr.DataArray(new_data, coords=coords, attrs=attrs, dims=dims)
 
     def palettize(self, colormap):
-        """Palettize the current image using
-        *colormap*. Works only on"L" or "LA" images.
+        """Palettize the current image using `colormap`.
+
+        .. note::
+
+            Works only on "L" or "LA" images.
+
         """
 
         if self.mode not in ("L", "LA"):
@@ -746,31 +910,23 @@ class XRImage(object):
         l_data = self.data.sel(bands=['L'])
 
         def _palettize(data):
-            arr, palette = colormap.palettize(data.reshape(data.shape[1:]))
-            new_shape = (1, arr.shape[0], arr.shape[1])
-            arr = arr.reshape(new_shape)
-            return arr, palette
+            # returns data and palette, only need data
+            return colormap.palettize(data)[0]
 
-        delayed = dask.delayed(_palettize)(l_data.data)
-        new_data, palette = delayed[0], delayed[1]
-        new_data = da.from_delayed(new_data, shape=l_data.shape,
-                                   dtype=l_data.dtype)
-        # XXX: Can we complete this method without computing the data?
-        new_data, self.palette = da.compute(new_data, palette)
-        new_data = da.from_array(new_data,
-                                 chunks=self.data.data.chunks)
+        new_data = l_data.data.map_blocks(_palettize, dtype=l_data.dtype)
+        self.palette = tuple(colormap.colors)
 
         if self.mode == "L":
             mode = "P"
         else:
             mode = "PA"
+            new_data = da.concatenate([new_data, self.data.sel(bands=['A'])], axis=0)
 
         self.data.data = new_data
         self.data.coords['bands'] = list(mode)
 
     def blend(self, other):
-        """Alpha blend *other* on top of the current image.
-        """
+        """Alpha blend *other* on top of the current image."""
         raise NotImplementedError("This method has not be implemented for "
                                   "xarray support.")
 
