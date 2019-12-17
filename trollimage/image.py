@@ -33,6 +33,7 @@ import re
 from copy import deepcopy
 
 import numpy as np
+import dask 
 import six
 from PIL import Image as Pil
 
@@ -124,9 +125,9 @@ class Image(object):
 
         if(channels is not None and
            not isinstance(channels, (tuple, set, list,
-                                     np.ndarray, np.ma.core.MaskedArray))):
+                                     np.ndarray, np.ma.core.MaskedArray, dask.array.core.Array))):
             raise TypeError("Image channels should a tuple, set, list, numpy "
-                            "array, or masked array.")
+                            "numpy array, numpy masked array or dask array.")
 
         if(isinstance(channels, (tuple, list)) and
            len(channels) != len(re.findall("[A-Z]", mode))):
